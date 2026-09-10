@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sribhavani-vasavi-bhavan-pms
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NPM_CONFIG_PRODUCTION
+        value: "false"
