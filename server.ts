@@ -11,10 +11,12 @@ interface PMSStoreData {
   pastPayments: Payment[];
   version: number;
   updatedAt: string;
+  lastClearedAt?: string;
 }
 
 const DATA_DIR = path.join(process.cwd(), 'data');
 const DATA_FILE = path.join(DATA_DIR, 'pms_store.json');
+const BACKUP_FILE = path.join(DATA_DIR, 'pms_store.backup.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
@@ -32,8 +34,16 @@ let pmsStore: PMSStoreData = {
 
 // Load existing data if available
 try {
+  let fileToLoad: string | null = null;
   if (fs.existsSync(DATA_FILE)) {
-    const raw = fs.readFileSync(DATA_FILE, 'utf-8');
+    fileToLoad = DATA_FILE;
+  } else if (fs.existsSync(BACKUP_FILE)) {
+    console.warn('[PMS Server] Primary data file missing, loading from secondary backup...');
+    fileToLoad = BACKUP_FILE;
+  }
+
+  if (fileToLoad) {
+    const raw = fs.readFileSync(fileToLoad, 'utf-8');
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.rooms)) {
       pmsStore = {
@@ -42,26 +52,31 @@ try {
         pastPayments: Array.isArray(parsed.pastPayments) ? parsed.pastPayments : [],
         version: typeof parsed.version === 'number' ? parsed.version : 1,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
+        lastClearedAt: parsed.lastClearedAt || undefined,
       };
       console.log(`[PMS Server] Loaded existing state from disk: ${pmsStore.rooms.length} rooms, ${pmsStore.bookings.length} bookings.`);
     }
   } else {
     // Write initial state to disk
     fs.writeFileSync(DATA_FILE, JSON.stringify(pmsStore, null, 2), 'utf-8');
+    fs.writeFileSync(BACKUP_FILE, JSON.stringify(pmsStore, null, 2), 'utf-8');
     console.log('[PMS Server] Initialized new PMS database file on disk.');
   }
 } catch (err) {
   console.error('[PMS Server] Error loading PMS store from disk:', err);
 }
 
-// Helper to save store atomically
+// Helper to save store atomically and keep secondary backup
 function saveStoreToDisk(): void {
   try {
     pmsStore.version += 1;
     pmsStore.updatedAt = new Date().toISOString();
     const tempFile = `${DATA_FILE}.tmp`;
-    fs.writeFileSync(tempFile, JSON.stringify(pmsStore, null, 2), 'utf-8');
+    const serialized = JSON.stringify(pmsStore, null, 2);
+    fs.writeFileSync(tempFile, serialized, 'utf-8');
     fs.renameSync(tempFile, DATA_FILE);
+    // Keep secondary backup on disk
+    fs.writeFileSync(BACKUP_FILE, serialized, 'utf-8');
   } catch (err) {
     console.error('[PMS Server] Failed to save PMS store to disk:', err);
   }
@@ -70,15 +85,17 @@ function saveStoreToDisk(): void {
 // SSE Clients set
 const sseClients = new Set<express.Response>();
 
-function broadcastState(): void {
+function broadcastState(isReset = false): void {
   const payload = `data: ${JSON.stringify({
     type: 'STATE_CHANGED',
+    isReset,
     data: {
       rooms: pmsStore.rooms,
       bookings: pmsStore.bookings,
       pastPayments: pmsStore.pastPayments,
       version: pmsStore.version,
       updatedAt: pmsStore.updatedAt,
+      lastClearedAt: pmsStore.lastClearedAt,
     },
   })}\n\n`;
 
@@ -119,6 +136,7 @@ async function startServer() {
       pastPayments: pmsStore.pastPayments,
       version: pmsStore.version,
       updatedAt: pmsStore.updatedAt,
+      lastClearedAt: pmsStore.lastClearedAt,
     });
   });
 
@@ -140,12 +158,17 @@ async function startServer() {
       }
 
       saveStoreToDisk();
-      broadcastState();
+      broadcastState(false);
+
+      console.log(
+        `[PMS Server] State synchronized: ${rooms.length} rooms, ${pmsStore.bookings.length} bookings, ${pmsStore.pastPayments.length} payments (v${pmsStore.version}).`
+      );
 
       res.json({
         success: true,
         version: pmsStore.version,
         updatedAt: pmsStore.updatedAt,
+        lastClearedAt: pmsStore.lastClearedAt,
       });
     } catch (err: any) {
       console.error('[PMS Server] Failed to sync state:', err);
@@ -164,11 +187,14 @@ async function startServer() {
       pmsStore.rooms = INITIAL_ROOMS;
       pmsStore.bookings = INITIAL_BOOKINGS;
       pmsStore.pastPayments = INITIAL_PAST_PAYMENTS;
+      pmsStore.lastClearedAt = new Date().toISOString();
       saveStoreToDisk();
-      broadcastState();
+      broadcastState(true);
+      console.log('[PMS Server] Admin executed Reset to Sample Data.');
       res.json({
         success: true,
         version: pmsStore.version,
+        lastClearedAt: pmsStore.lastClearedAt,
         data: {
           rooms: pmsStore.rooms,
           bookings: pmsStore.bookings,
@@ -196,11 +222,14 @@ async function startServer() {
         currentBookingId: null,
         maintenanceReason: undefined,
       }));
+      pmsStore.lastClearedAt = new Date().toISOString();
       saveStoreToDisk();
-      broadcastState();
+      broadcastState(true);
+      console.log('[PMS Server] Admin executed Clear Ledger.');
       res.json({
         success: true,
         version: pmsStore.version,
+        lastClearedAt: pmsStore.lastClearedAt,
         data: {
           rooms: pmsStore.rooms,
           bookings: pmsStore.bookings,
@@ -223,12 +252,14 @@ async function startServer() {
     res.write(
       `data: ${JSON.stringify({
         type: 'INIT',
+        isReset: false,
         data: {
           rooms: pmsStore.rooms,
           bookings: pmsStore.bookings,
           pastPayments: pmsStore.pastPayments,
           version: pmsStore.version,
           updatedAt: pmsStore.updatedAt,
+          lastClearedAt: pmsStore.lastClearedAt,
         },
       })}\n\n`
     );

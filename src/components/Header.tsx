@@ -16,6 +16,7 @@ import {
   RefreshCw,
   Lock,
   CalendarCheck,
+  HardDrive,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
@@ -29,6 +30,7 @@ export const Header: React.FC = () => {
     setIsDailyLedgerOpen,
     setIsReservationsModalOpen,
     setIsBlueprintOpen,
+    setIsBackupModalOpen,
     resetToSampleData,
   } = usePMS();
   const [currentTime, setCurrentTime] = useState(new Date());
@@ -140,11 +142,21 @@ export const Header: React.FC = () => {
             <button
               id="btn-daily-ledger"
               onClick={() => setIsDailyLedgerOpen(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg shadow transition-colors"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold rounded-lg shadow transition-colors cursor-pointer"
               title="View Daily Collections & Housekeeping Ledger"
             >
               <Receipt className="w-3.5 h-3.5" />
               <span>Daily Ledger</span>
+            </button>
+
+            <button
+              id="btn-backup-restore-modal"
+              onClick={() => setIsBackupModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-stone-800 hover:bg-stone-700 text-stone-200 border border-stone-700 hover:border-emerald-500/50 text-xs font-medium rounded-lg transition-colors cursor-pointer"
+              title="Download Data Backup or Restore System Records"
+            >
+              <HardDrive className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Backup</span>
             </button>
 
             <button

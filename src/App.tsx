@@ -15,6 +15,7 @@ import { HousekeepingLedgerModal } from './components/HousekeepingLedgerModal';
 import { BlockRoomModal } from './components/BlockRoomModal';
 import { SystemBlueprintModal } from './components/SystemBlueprintModal';
 import { ReservationsModal } from './components/ReservationsModal';
+import { BackupRestoreModal } from './components/BackupRestoreModal';
 
 export default function App() {
   return (
@@ -42,6 +43,7 @@ export default function App() {
         <BlockRoomModal />
         <HousekeepingLedgerModal />
         <SystemBlueprintModal />
+        <BackupRestoreModal />
       </div>
     </PMSProvider>
   );

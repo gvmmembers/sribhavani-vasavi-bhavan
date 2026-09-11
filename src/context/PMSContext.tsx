@@ -51,6 +51,10 @@ interface PMSContextType {
   setIsReservationsModalOpen: (open: boolean) => void;
   editingBooking: Booking | null;
   setEditingBooking: (booking: Booking | null) => void;
+  isBackupModalOpen: boolean;
+  setIsBackupModalOpen: (open: boolean) => void;
+  downloadBackup: () => void;
+  restoreFromBackup: (backupData: any) => Promise<{ success: boolean; message: string }>;
 
   // Operational Actions
   toggleRoomAc: (roomId: string) => void;
@@ -116,6 +120,8 @@ const PMSContext = createContext<PMSContextType | undefined>(undefined);
 const LOCAL_STORAGE_KEY_ROOMS = 'sbvb_pms_rooms_v5';
 const LOCAL_STORAGE_KEY_BOOKINGS = 'sbvb_pms_bookings_v5';
 const LOCAL_STORAGE_KEY_PAYMENTS = 'sbvb_pms_payments_v5';
+const LOCAL_STORAGE_KEY_META = 'sbvb_pms_meta_v5';
+const LOCAL_STORAGE_KEY_CLEARED = 'sbvb_pms_cleared_v5';
 
 export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [rooms, setRooms] = useState<Room[]>(() => {
@@ -149,6 +155,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isSynced, setIsSynced] = useState<boolean>(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(new Date());
   const serverVersionRef = useRef<number>(0);
+  const isRehydratingRef = useRef<boolean>(false);
 
   // Filter & Search states
   const [selectedFloor, setSelectedFloor] = useState<'all' | FloorName>('all');
@@ -165,9 +172,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isDailyLedgerOpen, setIsDailyLedgerOpen] = useState(false);
   const [isBlueprintOpen, setIsBlueprintOpen] = useState(false);
   const [isReservationsModalOpen, setIsReservationsModalOpen] = useState(false);
+  const [isBackupModalOpen, setIsBackupModalOpen] = useState(false);
   const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
 
-  // Save to local storage whenever state changes
+  // Save to local storage whenever state changes and update metadata
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY_ROOMS, JSON.stringify(rooms));
@@ -179,6 +187,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     try {
       localStorage.setItem(LOCAL_STORAGE_KEY_BOOKINGS, JSON.stringify(bookings));
+      localStorage.setItem(
+        LOCAL_STORAGE_KEY_META,
+        JSON.stringify({ lastSavedAt: Date.now(), bookingsCount: bookings.length })
+      );
     } catch (e) {
       console.error('Failed to save bookings to localStorage', e);
     }
@@ -223,6 +235,104 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     []
   );
 
+  // Central handler for server data with smart self-healing protection against Render sleeps/reboots
+  const handleIncomingServerData = useCallback(
+    (data: any, isReset = false) => {
+      if (!data || !Array.isArray(data.rooms)) return;
+
+      // Check if admin intentionally triggered a server-side reset/clear
+      if (isReset || data.lastClearedAt) {
+        const clearedTime = data.lastClearedAt ? new Date(data.lastClearedAt).getTime() : Date.now();
+        let localMetaLastSaved = 0;
+        try {
+          const meta = JSON.parse(localStorage.getItem(LOCAL_STORAGE_KEY_META) || '{}');
+          localMetaLastSaved = meta.lastSavedAt || 0;
+        } catch {}
+
+        if (clearedTime >= localMetaLastSaved) {
+          // Intentional admin reset: adopt server's cleared state
+          localStorage.setItem(LOCAL_STORAGE_KEY_CLEARED, data.lastClearedAt || new Date().toISOString());
+          setRooms(data.rooms);
+          setBookings(Array.isArray(data.bookings) ? data.bookings : []);
+          setPastPayments(Array.isArray(data.pastPayments) ? data.pastPayments : []);
+          if (data.version) serverVersionRef.current = data.version;
+          setIsSynced(true);
+          setLastSyncTime(new Date());
+          return;
+        }
+      }
+
+      const serverBookings = Array.isArray(data.bookings) ? data.bookings : [];
+      const serverPayments = Array.isArray(data.pastPayments) ? data.pastPayments : [];
+
+      // Read local storage to see if client holds valid state
+      let localBookings: Booking[] = [];
+      let localPayments: Payment[] = [];
+      let localRooms: Room[] = [];
+      let localClearedAt: string | null = null;
+      let localMeta: { lastSavedAt?: number } = {};
+
+      try {
+        const rawB = localStorage.getItem(LOCAL_STORAGE_KEY_BOOKINGS);
+        localBookings = rawB ? JSON.parse(rawB) : [];
+      } catch {}
+      try {
+        const rawP = localStorage.getItem(LOCAL_STORAGE_KEY_PAYMENTS);
+        localPayments = rawP ? JSON.parse(rawP) : [];
+      } catch {}
+      try {
+        const rawR = localStorage.getItem(LOCAL_STORAGE_KEY_ROOMS);
+        localRooms = rawR ? JSON.parse(rawR) : [];
+      } catch {}
+      try {
+        localClearedAt = localStorage.getItem(LOCAL_STORAGE_KEY_CLEARED);
+      } catch {}
+      try {
+        const rawM = localStorage.getItem(LOCAL_STORAGE_KEY_META);
+        localMeta = rawM ? JSON.parse(rawM) : {};
+      } catch {}
+
+      const hasLocalData = localBookings.length > 0 || localPayments.length > 0;
+      const isServerEmpty = serverBookings.length === 0 && (data.version <= 1 || !data.version);
+      const isIntentionallyCleared = Boolean(
+        localClearedAt &&
+        localMeta.lastSavedAt &&
+        new Date(localClearedAt).getTime() >= localMeta.lastSavedAt
+      );
+
+      // Self-Healing Trigger: If server woke up with empty state, do NOT wipe local data!
+      // Instead, rehydrate the server with local data so all devices get the bookings back.
+      if (hasLocalData && isServerEmpty && !isIntentionallyCleared && !isRehydratingRef.current) {
+        isRehydratingRef.current = true;
+        console.warn(
+          `[PMS Self-Healing] Server rebooted with empty state. Auto-rehydrating server with ${localBookings.length} local bookings...`
+        );
+        const roomsToSync = localRooms.length > 0 ? localRooms : data.rooms;
+        syncWithServer(roomsToSync, localBookings, localPayments).finally(() => {
+          setTimeout(() => {
+            isRehydratingRef.current = false;
+          }, 2000);
+        });
+        return;
+      }
+
+      // Normal state update from server
+      if (data.version && data.version <= serverVersionRef.current) {
+        return;
+      }
+      if (data.version) {
+        serverVersionRef.current = data.version;
+      }
+
+      setRooms(data.rooms);
+      setBookings(serverBookings);
+      setPastPayments(serverPayments);
+      setIsSynced(true);
+      setLastSyncTime(new Date());
+    },
+    [syncWithServer]
+  );
+
   // Manual or initial pull from server
   const fetchStateFromServer = useCallback(async () => {
     try {
@@ -231,25 +341,11 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       if (!res.ok) return;
       const data = await res.json();
-      if (data && Array.isArray(data.rooms)) {
-        if (data.version && data.version <= serverVersionRef.current) {
-          // No newer changes
-          return;
-        }
-        if (data.version) {
-          serverVersionRef.current = data.version;
-        }
-
-        setRooms(data.rooms);
-        setBookings(Array.isArray(data.bookings) ? data.bookings : []);
-        setPastPayments(Array.isArray(data.pastPayments) ? data.pastPayments : []);
-        setIsSynced(true);
-        setLastSyncTime(new Date());
-      }
+      handleIncomingServerData(data, false);
     } catch (err) {
       console.warn('[PMS Fetch] Offline or waiting for server startup...', err);
     }
-  }, []);
+  }, [handleIncomingServerData]);
 
   // Multi-device synchronization: Fetch on mount, listen to SSE stream, and poll fallback
   useEffect(() => {
@@ -265,21 +361,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         try {
           const payload = JSON.parse(event.data);
           if (payload.type === 'STATE_CHANGED' || payload.type === 'INIT') {
-            const data = payload.data;
-            if (data && Array.isArray(data.rooms)) {
-              if (data.version && data.version <= serverVersionRef.current) {
-                return;
-              }
-              if (data.version) {
-                serverVersionRef.current = data.version;
-              }
-
-              setRooms(data.rooms);
-              setBookings(Array.isArray(data.bookings) ? data.bookings : []);
-              setPastPayments(Array.isArray(data.pastPayments) ? data.pastPayments : []);
-              setIsSynced(true);
-              setLastSyncTime(new Date());
-            }
+            handleIncomingServerData(payload.data, Boolean(payload.isReset));
           }
         } catch {
           // Non-JSON or heartbeat
@@ -298,10 +380,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('[PMS SSE] SSE setup error:', err);
     }
 
-    // 3. Periodic fallback poll every 3 seconds for rock-solid cross-device sync
+    // 3. Periodic fallback poll every 4 seconds for rock-solid cross-device sync
     const pollInterval = setInterval(() => {
       fetchStateFromServer();
-    }, 3000);
+    }, 4000);
 
     return () => {
       if (eventSource) {
@@ -309,7 +391,77 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       clearInterval(pollInterval);
     };
-  }, [fetchStateFromServer]);
+  }, [fetchStateFromServer, handleIncomingServerData]);
+
+  // Download full JSON backup file to user's computer
+  const downloadBackup = useCallback(() => {
+    const backup = {
+      lodgeName: 'Sri Bhavani Vasavi Bhavan',
+      address: 'Tiruvannamalai, Tamil Nadu',
+      backupVersion: 1,
+      exportedAt: new Date().toISOString(),
+      counts: {
+        rooms: rooms.length,
+        bookings: bookings.length,
+        pastPayments: pastPayments.length,
+      },
+      rooms,
+      bookings,
+      pastPayments,
+      version: serverVersionRef.current || 1,
+    };
+    const jsonStr = JSON.stringify(backup, null, 2);
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
+    a.href = url;
+    a.download = `SBVB_PMS_Backup_${dateStr}_${timeStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [rooms, bookings, pastPayments]);
+
+  // Restore state from uploaded backup file
+  const restoreFromBackup = useCallback(
+    async (backupData: any): Promise<{ success: boolean; message: string }> => {
+      try {
+        if (!backupData || !Array.isArray(backupData.rooms)) {
+          return { success: false, message: 'Invalid backup format: Missing rooms list' };
+        }
+        const restoredRooms: Room[] = backupData.rooms;
+        const restoredBookings: Booking[] = Array.isArray(backupData.bookings) ? backupData.bookings : [];
+        const restoredPayments: Payment[] = Array.isArray(backupData.pastPayments) ? backupData.pastPayments : [];
+
+        setRooms(restoredRooms);
+        setBookings(restoredBookings);
+        setPastPayments(restoredPayments);
+
+        localStorage.setItem(LOCAL_STORAGE_KEY_ROOMS, JSON.stringify(restoredRooms));
+        localStorage.setItem(LOCAL_STORAGE_KEY_BOOKINGS, JSON.stringify(restoredBookings));
+        localStorage.setItem(LOCAL_STORAGE_KEY_PAYMENTS, JSON.stringify(restoredPayments));
+        localStorage.setItem(
+          LOCAL_STORAGE_KEY_META,
+          JSON.stringify({ lastSavedAt: Date.now(), bookingsCount: restoredBookings.length })
+        );
+        localStorage.removeItem(LOCAL_STORAGE_KEY_CLEARED);
+
+        await syncWithServer(restoredRooms, restoredBookings, restoredPayments);
+
+        return {
+          success: true,
+          message: `Successfully restored ${restoredRooms.length} rooms, ${restoredBookings.length} bookings, and ${restoredPayments.length} payments.`,
+        };
+      } catch (err: any) {
+        return { success: false, message: err.message || 'Failed to restore backup' };
+      }
+    },
+    [syncWithServer]
+  );
+
 
   const getActiveBookingForRoom = (roomId: string): Booking | undefined => {
     return bookings.find((b) => b.roomId === roomId && b.status === 'ACTIVE');
@@ -875,6 +1027,8 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const resetToSampleData = async () => {
+    const nowIso = new Date().toISOString();
+    localStorage.setItem(LOCAL_STORAGE_KEY_CLEARED, nowIso);
     try {
       const res = await fetch('/api/pms/reset', {
         method: 'POST',
@@ -897,6 +1051,8 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearLedgerData = async () => {
+    const nowIso = new Date().toISOString();
+    localStorage.setItem(LOCAL_STORAGE_KEY_CLEARED, nowIso);
     try {
       const res = await fetch('/api/pms/clear-ledger', {
         method: 'POST',
@@ -958,6 +1114,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsBlueprintOpen,
         isReservationsModalOpen,
         setIsReservationsModalOpen,
+        isBackupModalOpen,
+        setIsBackupModalOpen,
+        downloadBackup,
+        restoreFromBackup,
         editingBooking,
         setEditingBooking,
         toggleRoomAc,
