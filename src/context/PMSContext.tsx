@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import {
   Room,
   Booking,
+  BookingStatus,
   Payment,
   ConversationLog,
   RoomCharge,
@@ -46,6 +47,10 @@ interface PMSContextType {
   setIsDailyLedgerOpen: (open: boolean) => void;
   isBlueprintOpen: boolean;
   setIsBlueprintOpen: (open: boolean) => void;
+  isReservationsModalOpen: boolean;
+  setIsReservationsModalOpen: (open: boolean) => void;
+  editingBooking: Booking | null;
+  setEditingBooking: (booking: Booking | null) => void;
 
   // Operational Actions
   toggleRoomAc: (roomId: string) => void;
@@ -63,6 +68,7 @@ interface PMSContextType {
     extraBedCount?: number;
     checkInTime: string;
     expectedCheckOutTime: string;
+    totalAgreedAmount?: number;
     advancePayment: {
       amount: number;
       method: PaymentMethod;
@@ -92,6 +98,13 @@ interface PMSContextType {
   }) => Booking;
 
   getActiveBookingForRoom: (roomId: string) => Booking | undefined;
+  isRoomAvailable: (roomId: string, checkInIso: string, checkOutIso: string, excludeBookingId?: string) => boolean;
+  getAvailableRoomsForDates: (checkInIso: string, checkOutIso: string, excludeBookingId?: string) => Room[];
+  getUpcomingBookingsForRoom: (roomId: string) => Booking[];
+  getUpcomingReservations: () => Booking[];
+  checkInReservation: (bookingId: string) => Booking;
+  updateBooking: (bookingId: string, updates: Partial<Booking>) => Booking;
+  cancelBooking: (bookingId: string, reason?: string) => Booking;
   deletePayment: (paymentId: string) => void;
   deleteBookingRecord: (bookingId: string) => void;
   resetToSampleData: () => Promise<void>;
@@ -151,6 +164,8 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [blockRoomTarget, setBlockRoomTarget] = useState<Room | null>(null);
   const [isDailyLedgerOpen, setIsDailyLedgerOpen] = useState(false);
   const [isBlueprintOpen, setIsBlueprintOpen] = useState(false);
+  const [isReservationsModalOpen, setIsReservationsModalOpen] = useState(false);
+  const [editingBooking, setEditingBooking] = useState<Booking | null>(null);
 
   // Save to local storage whenever state changes
   useEffect(() => {
@@ -369,7 +384,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   /**
-   * Fast Check-in (Immediately persisted & synced to all devices)
+   * Fast Check-in or Advance Reservation (Immediately persisted & synced to all devices)
    */
   const checkIn = ({
     roomId,
@@ -381,6 +396,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     extraBedCount,
     checkInTime,
     expectedCheckOutTime,
+    totalAgreedAmount,
     advancePayment,
     initialNote,
   }: {
@@ -393,6 +409,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     extraBedCount?: number;
     checkInTime: string;
     expectedCheckOutTime: string;
+    totalAgreedAmount?: number;
     advancePayment: {
       amount: number;
       method: PaymentMethod;
@@ -406,6 +423,22 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const guestId = `gst-${Date.now()}`;
     const bookingId = `bk-${room.number}-${Date.now().toString().slice(-4)}`;
     const bookingNumber = `SBVB-${new Date().getFullYear()}-${room.number}${Date.now().toString().slice(-3)}`;
+
+    // Distinguish between Immediate Walk-In Check-In and Advance / Future-Date Reservation
+    const checkInDateObj = new Date(checkInTime);
+    const isFutureReservation = checkInDateObj.getTime() > Date.now() + 15 * 60 * 1000;
+    const initialStatus: BookingStatus = isFutureReservation ? 'RESERVED' : 'ACTIVE';
+
+    // Calculate total agreed amount
+    const daysStayed = Math.max(
+      1,
+      Math.round((new Date(expectedCheckOutTime).getTime() - checkInDateObj.getTime()) / (1000 * 60 * 60 * 24))
+    );
+    const extraBedDaily = hasExtraBed ? (extraBedCount || 1) * 150 : 0;
+    const computedAgreedTotal =
+      totalAgreedAmount !== undefined && totalAgreedAmount > 0
+        ? totalAgreedAmount
+        : (tariffPerDay + extraBedDaily) * daysStayed;
 
     const fullGuest: Guest = {
       ...guest,
@@ -424,8 +457,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         type: 'ADVANCE',
         method: advancePayment.method,
         referenceNumber: advancePayment.referenceNumber || `REC-${Date.now().toString().slice(-4)}`,
-        notes: 'Initial advance collected at check-in',
-        paidAt: checkInTime,
+        notes: isFutureReservation
+          ? 'Advance collected for future reservation'
+          : 'Initial advance collected at check-in',
+        paidAt: new Date().toISOString(),
       });
     }
 
@@ -441,7 +476,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         staffName: 'Reception',
         summary: initialNote.trim(),
         status: 'Logged',
-        timestamp: checkInTime,
+        timestamp: new Date().toISOString(),
       });
     }
 
@@ -460,25 +495,29 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       billingCycleType,
       checkInTime,
       expectedCheckOutTime,
-      status: 'ACTIVE',
+      status: initialStatus,
       charges: [],
       payments: initialPaymentsList,
       conversations,
       gstEnabled: false,
+      totalAgreedAmount: computedAgreedTotal,
       createdAt: new Date().toISOString(),
     };
 
-    // Update rooms: mark OCCUPIED and sync AC active state with guest choice
-    const updatedRooms = rooms.map((r) =>
-      r.id === roomId
-        ? {
-            ...r,
-            status: 'OCCUPIED' as RoomStatus,
-            isAcActive: isAcOpted,
-            currentBookingId: bookingId,
-          }
-        : r
-    );
+    // Update rooms: ONLY mark room OCCUPIED today if the guest has actually checked in (immediate walk-in)
+    // If it's a future reservation, the room stays AVAILABLE today for other guests!
+    const updatedRooms = !isFutureReservation
+      ? rooms.map((r) =>
+          r.id === roomId
+            ? {
+                ...r,
+                status: 'OCCUPIED' as RoomStatus,
+                isAcActive: isAcOpted,
+                currentBookingId: bookingId,
+              }
+            : r
+        )
+      : rooms;
 
     const updatedBookings = [newBooking, ...bookings];
 
@@ -489,6 +528,172 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncWithServer(updatedRooms, updatedBookings, pastPayments);
 
     return newBooking;
+  };
+
+  /**
+   * Check if a room is available across a specific date range [checkInIso, checkOutIso]
+   */
+  const isRoomAvailable = (
+    roomId: string,
+    checkInIso: string,
+    checkOutIso: string,
+    excludeBookingId?: string
+  ): boolean => {
+    const targetRoom = rooms.find((r) => r.id === roomId);
+    if (!targetRoom) return false;
+    if (targetRoom.status === 'MAINTENANCE') return false;
+
+    const reqStart = new Date(checkInIso).getTime();
+    const reqEnd = new Date(checkOutIso).getTime();
+
+    if (isNaN(reqStart) || isNaN(reqEnd) || reqEnd <= reqStart) {
+      return false;
+    }
+
+    // Check collisions with any ACTIVE or RESERVED bookings on this room
+    const hasCollision = bookings.some((b) => {
+      if (b.roomId !== roomId) return false;
+      if (excludeBookingId && b.id === excludeBookingId) return false;
+      if (b.status !== 'ACTIVE' && b.status !== 'RESERVED') return false;
+
+      const bStart = new Date(b.checkInTime).getTime();
+      const bEnd = new Date(b.actualCheckOutTime || b.expectedCheckOutTime).getTime();
+
+      // Standard interval overlap check: reqStart < bEnd && reqEnd > bStart
+      return reqStart < bEnd && reqEnd > bStart;
+    });
+
+    return !hasCollision;
+  };
+
+  /**
+   * Get all rooms available for a specific date range
+   */
+  const getAvailableRoomsForDates = (
+    checkInIso: string,
+    checkOutIso: string,
+    excludeBookingId?: string
+  ): Room[] => {
+    return rooms.filter((r) => isRoomAvailable(r.id, checkInIso, checkOutIso, excludeBookingId));
+  };
+
+  /**
+   * Get upcoming future bookings for a specific room
+   */
+  const getUpcomingBookingsForRoom = (roomId: string): Booking[] => {
+    return bookings
+      .filter((b) => b.roomId === roomId && b.status === 'RESERVED')
+      .sort((a, b) => new Date(a.checkInTime).getTime() - new Date(b.checkInTime).getTime());
+  };
+
+  /**
+   * Get all future reservations across all rooms
+   */
+  const getUpcomingReservations = (): Booking[] => {
+    return bookings
+      .filter((b) => b.status === 'RESERVED')
+      .sort((a, b) => new Date(a.checkInTime).getTime() - new Date(b.checkInTime).getTime());
+  };
+
+  /**
+   * Activate a future reservation into an ACTIVE checked-in stay
+   */
+  const checkInReservation = (bookingId: string): Booking => {
+    const targetBooking = bookings.find((b) => b.id === bookingId);
+    if (!targetBooking) throw new Error('Reservation not found');
+
+    const updatedBooking: Booking = {
+      ...targetBooking,
+      status: 'ACTIVE',
+      checkInTime: new Date().toISOString(),
+    };
+
+    const updatedRooms = rooms.map((r) =>
+      r.id === targetBooking.roomId
+        ? {
+            ...r,
+            status: 'OCCUPIED' as RoomStatus,
+            isAcActive: targetBooking.isAcOpted,
+            currentBookingId: bookingId,
+          }
+        : r
+    );
+
+    const updatedBookings = bookings.map((b) => (b.id === bookingId ? updatedBooking : b));
+
+    setRooms(updatedRooms);
+    setBookings(updatedBookings);
+    syncWithServer(updatedRooms, updatedBookings, pastPayments);
+
+    return updatedBooking;
+  };
+
+  /**
+   * Update existing booking details (dates, room, tariff, guest, advance, notes)
+   */
+  const updateBooking = (bookingId: string, updates: Partial<Booking>): Booking => {
+    const targetBooking = bookings.find((b) => b.id === bookingId);
+    if (!targetBooking) throw new Error('Booking not found');
+
+    const updatedBooking: Booking = {
+      ...targetBooking,
+      ...updates,
+    };
+
+    // If roomId changed and booking is ACTIVE, update rooms
+    let updatedRooms = rooms;
+    if (updates.roomId && updates.roomId !== targetBooking.roomId && targetBooking.status === 'ACTIVE') {
+      updatedRooms = rooms.map((r) => {
+        if (r.id === targetBooking.roomId && r.currentBookingId === bookingId) {
+          return { ...r, status: 'AVAILABLE' as RoomStatus, currentBookingId: null };
+        }
+        if (r.id === updates.roomId) {
+          return { ...r, status: 'OCCUPIED' as RoomStatus, currentBookingId: bookingId, isAcActive: updatedBooking.isAcOpted };
+        }
+        return r;
+      });
+    }
+
+    const updatedBookings = bookings.map((b) => (b.id === bookingId ? updatedBooking : b));
+
+    setRooms(updatedRooms);
+    setBookings(updatedBookings);
+    syncWithServer(updatedRooms, updatedBookings, pastPayments);
+
+    return updatedBooking;
+  };
+
+  /**
+   * Cancel a reservation
+   */
+  const cancelBooking = (bookingId: string, reason?: string): Booking => {
+    const targetBooking = bookings.find((b) => b.id === bookingId);
+    if (!targetBooking) throw new Error('Booking not found');
+
+    const updatedBooking: Booking = {
+      ...targetBooking,
+      status: 'CANCELLED',
+      notes: reason ? `${targetBooking.notes || ''} [Cancelled: ${reason}]`.trim() : targetBooking.notes,
+    };
+
+    const updatedRooms = rooms.map((r) => {
+      if (r.id === targetBooking.roomId && r.currentBookingId === bookingId) {
+        return {
+          ...r,
+          status: 'AVAILABLE' as RoomStatus,
+          currentBookingId: null,
+        };
+      }
+      return r;
+    });
+
+    const updatedBookings = bookings.map((b) => (b.id === bookingId ? updatedBooking : b));
+
+    setRooms(updatedRooms);
+    setBookings(updatedBookings);
+    syncWithServer(updatedRooms, updatedBookings, pastPayments);
+
+    return updatedBooking;
   };
 
   const addConversationLog = (
@@ -751,6 +956,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsDailyLedgerOpen,
         isBlueprintOpen,
         setIsBlueprintOpen,
+        isReservationsModalOpen,
+        setIsReservationsModalOpen,
+        editingBooking,
+        setEditingBooking,
         toggleRoomAc,
         blockRoom,
         unblockRoom,
@@ -761,6 +970,13 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         removeRoomCharge,
         checkOut,
         getActiveBookingForRoom,
+        isRoomAvailable,
+        getAvailableRoomsForDates,
+        getUpcomingBookingsForRoom,
+        getUpcomingReservations,
+        checkInReservation,
+        updateBooking,
+        cancelBooking,
         deletePayment,
         deleteBookingRecord,
         resetToSampleData,

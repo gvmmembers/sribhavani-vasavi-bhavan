@@ -89,18 +89,26 @@ export const HousekeepingLedgerModal: React.FC = () => {
     if (filterScope === 'DATE') {
       const matchIn = b.checkInTime.startsWith(selectedDate);
       const matchOut = b.actualCheckOutTime ? b.actualCheckOutTime.startsWith(selectedDate) : false;
-      if (!matchIn && !matchOut && b.status !== 'CHECKED_IN') return false;
+      const matchExpected = b.expectedCheckOutTime ? b.expectedCheckOutTime.startsWith(selectedDate) : false;
+      const matchCreated = b.createdAt ? b.createdAt.startsWith(selectedDate) : false;
+      if (!matchIn && !matchOut && !matchExpected && !matchCreated && b.status !== 'ACTIVE' && b.status !== 'RESERVED') {
+        return false;
+      }
     } else if (filterScope === 'MONTH') {
       const targetMonth = selectedDate.slice(0, 7);
       const matchIn = b.checkInTime.startsWith(targetMonth);
       const matchOut = b.actualCheckOutTime ? b.actualCheckOutTime.startsWith(targetMonth) : false;
-      if (!matchIn && !matchOut && b.status !== 'CHECKED_IN') return false;
+      const matchExpected = b.expectedCheckOutTime ? b.expectedCheckOutTime.startsWith(targetMonth) : false;
+      const matchCreated = b.createdAt ? b.createdAt.startsWith(targetMonth) : false;
+      if (!matchIn && !matchOut && !matchExpected && !matchCreated && b.status !== 'ACTIVE' && b.status !== 'RESERVED') {
+        return false;
+      }
     }
 
     if (!queryClean) return true;
     return (
       b.guest.fullName.toLowerCase().includes(queryClean) ||
-      b.guest.phone.toLowerCase().includes(queryClean) ||
+      b.guest.primaryPhone.includes(queryClean) ||
       b.roomNumber.toLowerCase().includes(queryClean) ||
       (b.notes && b.notes.toLowerCase().includes(queryClean))
     );
@@ -556,16 +564,26 @@ export const HousekeepingLedgerModal: React.FC = () => {
                           <tr key={b.id} className="hover:bg-stone-50">
                             <td className="p-2.5 font-bold text-stone-900">Room {b.roomNumber}</td>
                             <td className="p-2.5 font-medium text-stone-800">{b.guest.fullName}</td>
-                            <td className="p-2.5 text-stone-600">{b.guest.phone}</td>
+                            <td className="p-2.5 text-stone-600">{b.guest.primaryPhone}</td>
                             <td className="p-2.5">
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                  b.status === 'CHECKED_IN'
+                                  b.status === 'RESERVED'
+                                    ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                                    : b.status === 'ACTIVE'
                                     ? 'bg-rose-100 text-rose-800'
+                                    : b.status === 'CANCELLED'
+                                    ? 'bg-stone-100 text-stone-500 line-through'
                                     : 'bg-stone-100 text-stone-700'
                                 }`}
                               >
-                                {b.status === 'CHECKED_IN' ? 'Active Stay' : 'Completed'}
+                                {b.status === 'RESERVED'
+                                  ? 'Future Reservation'
+                                  : b.status === 'ACTIVE'
+                                  ? 'Active Stay'
+                                  : b.status === 'CANCELLED'
+                                  ? 'Cancelled'
+                                  : 'Completed'}
                               </span>
                             </td>
                             <td className="p-2.5 text-stone-600 whitespace-nowrap">
@@ -577,7 +595,7 @@ export const HousekeepingLedgerModal: React.FC = () => {
                                 : formatDateTime(b.expectedCheckOutTime)}
                             </td>
                             <td className="p-2.5 text-right font-black text-stone-900">
-                              ₹{b.appliedRoomRate}
+                              {formatCurrency(b.tariffPerDay)}
                             </td>
                             <td className="p-2.5 text-center whitespace-nowrap">
                               <button

@@ -176,7 +176,7 @@ export const GuestProfileModal: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-stone-400 mt-0.5">
-                {viewingRoom.type} Room • Floor {viewingRoom.floor} • Checked in{' '}
+                {viewingRoom.bedType} • {viewingRoom.floor} • Checked in{' '}
                 {formatDateTime(booking.checkInTime)}
               </p>
             </div>

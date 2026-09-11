@@ -14,6 +14,7 @@ import { InvoicePrintModal } from './components/InvoicePrintModal';
 import { HousekeepingLedgerModal } from './components/HousekeepingLedgerModal';
 import { BlockRoomModal } from './components/BlockRoomModal';
 import { SystemBlueprintModal } from './components/SystemBlueprintModal';
+import { ReservationsModal } from './components/ReservationsModal';
 
 export default function App() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
 
         {/* Action Modals */}
         <CheckInModal />
+        <ReservationsModal />
         <GuestProfileModal />
         <CheckOutModal />
         <InvoicePrintModal />

@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { usePMS } from '../context/PMSContext';
-import { IdProofType, BillingCycleType, PaymentMethod, Room } from '../types';
-import { formatCurrency } from '../utils/billing';
+import { IdProofType, BillingCycleType, PaymentMethod, Room, Booking } from '../types';
+import { formatCurrency, formatDateOnly } from '../utils/billing';
 import {
   X,
   LogIn,
+  CalendarCheck,
   User,
   Phone,
   Car,
@@ -20,14 +21,25 @@ import {
   Plus,
   Minus,
   Check,
+  AlertCircle,
+  Sparkles,
 } from 'lucide-react';
 
 const COMMON_TARIFF_PRESETS = [800, 1000, 1200, 1500, 1800, 2000, 2500, 3000];
 
 export const CheckInModal: React.FC = () => {
-  const { checkInRoom, setCheckInRoom, rooms, checkIn } = usePMS();
+  const {
+    checkInRoom,
+    setCheckInRoom,
+    editingBooking,
+    setEditingBooking,
+    rooms,
+    checkIn,
+    updateBooking,
+    isRoomAvailable,
+  } = usePMS();
 
-  // Selected room for checkin
+  // Active target room or edited booking room
   const [selectedRoomId, setSelectedRoomId] = useState<string>('');
 
   // Form State
@@ -56,7 +68,7 @@ export const CheckInModal: React.FC = () => {
   const [expectedCheckOutDays, setExpectedCheckOutDays] = useState<number>(1);
 
   // Advance Payment
-  const [advanceAmount, setAdvanceAmount] = useState<number>(1000);
+  const [advanceAmount, setAdvanceAmount] = useState<number | string>(1000);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Cash');
   const [paymentRef, setPaymentRef] = useState('');
   const [initialNote, setInitialNote] = useState('');
@@ -64,30 +76,118 @@ export const CheckInModal: React.FC = () => {
   // Error message
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Initialize modal state whenever checkInRoom or editingBooking changes
   useEffect(() => {
-    if (checkInRoom) {
+    if (editingBooking) {
+      setSelectedRoomId(editingBooking.roomId);
+      setFullName(editingBooking.guest.fullName);
+      setPrimaryPhone(editingBooking.guest.primaryPhone);
+      setAlternatePhone(editingBooking.guest.alternatePhone || '');
+      setIdProofType(editingBooking.guest.idProofType);
+      setIdNumber(editingBooking.guest.idNumber);
+      setVehicleNumber(editingBooking.guest.vehicleNumber || '');
+      setHomeCity(editingBooking.guest.homeCity);
+      setHomeState(editingBooking.guest.homeState);
+      setAdults(editingBooking.guest.adults || 2);
+      setChildren(editingBooking.guest.children || 0);
+
+      setTariffPerDay(editingBooking.tariffPerDay);
+      setIsAcOpted(editingBooking.isAcOpted);
+      setBillingCycleType(editingBooking.billingCycleType);
+      setHasExtraBed(!!editingBooking.hasExtraBed);
+      setExtraBedCount(editingBooking.extraBedCount || 1);
+
+      // Local ISO string for input
+      try {
+        const d = new Date(editingBooking.checkInTime);
+        const tzOffset = d.getTimezoneOffset() * 60000;
+        setCheckInTime(new Date(d.getTime() - tzOffset).toISOString().slice(0, 16));
+
+        const endD = new Date(editingBooking.expectedCheckOutTime);
+        const days = Math.max(1, Math.round((endD.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)));
+        setExpectedCheckOutDays(days);
+      } catch {
+        setCheckInTime(editingBooking.checkInTime);
+        setExpectedCheckOutDays(1);
+      }
+
+      const totalAdv = (editingBooking.payments || []).reduce((sum, p) => sum + p.amount, 0);
+      setAdvanceAmount(totalAdv);
+      setInitialNote(editingBooking.notes || '');
+      setErrorMessage(null);
+    } else if (checkInRoom) {
       setSelectedRoomId(checkInRoom.id);
       setIsAcOpted(checkInRoom.isAcEquipped ? checkInRoom.isAcActive : false);
-      // No fixed price; start with custom demand pricing
       setTariffPerDay(1000);
       setAdvanceAmount(1000);
       setHasExtraBed(false);
       setExtraBedCount(1);
+      setExpectedCheckOutDays(1);
 
+      // Default to current local time
       const now = new Date();
       const tzOffset = now.getTimezoneOffset() * 60000;
       const localISOTime = new Date(now.getTime() - tzOffset).toISOString().slice(0, 16);
       setCheckInTime(localISOTime);
-    }
-  }, [checkInRoom]);
 
-  if (!checkInRoom) return null;
+      // Reset guest particulars
+      setFullName('');
+      setPrimaryPhone('');
+      setAlternatePhone('');
+      setIdProofType('Aadhaar');
+      setIdNumber('');
+      setVehicleNumber('');
+      setHomeCity('');
+      setHomeState('Tamil Nadu');
+      setAdults(2);
+      setChildren(0);
+      setPaymentMethod('Cash');
+      setPaymentRef('');
+      setInitialNote('');
+      setErrorMessage(null);
+    }
+  }, [checkInRoom, editingBooking]);
+
+  const isOpen = !!checkInRoom || !!editingBooking;
+  if (!isOpen) return null;
 
   // Active chosen room
-  const activeRoom: Room = rooms.find((r) => r.id === selectedRoomId) || checkInRoom;
+  const activeRoom: Room = rooms.find((r) => r.id === selectedRoomId) || checkInRoom || rooms[0];
 
-  // Available rooms for switching if desired
-  const availableRooms = rooms.filter((r) => r.status === 'AVAILABLE' || r.id === checkInRoom.id);
+  // Helper date conversions
+  const checkInDate = new Date(checkInTime || Date.now());
+  const expectedCheckoutDate = new Date(
+    checkInDate.getTime() + expectedCheckOutDays * 24 * 60 * 60 * 1000
+  );
+
+  // Check if booking is in future
+  const isFutureBooking = checkInDate.getTime() > Date.now() + 15 * 60 * 1000;
+
+  // Financial Calculations
+  const calculatedDailyTotal = (Number(tariffPerDay) || 0) + (hasExtraBed ? extraBedCount * 150 : 0);
+  const totalAgreedAmount = calculatedDailyTotal * expectedCheckOutDays;
+  const numAdvance = advanceAmount === '' ? 0 : Number(advanceAmount);
+  const remainingBalance = Math.max(0, Math.round((totalAgreedAmount - numAdvance) * 100) / 100);
+
+  // Calculate available rooms for requested dates
+  const availableRooms = rooms.map((r) => {
+    const isAvail = isRoomAvailable(
+      r.id,
+      checkInDate.toISOString(),
+      expectedCheckoutDate.toISOString(),
+      editingBooking?.id
+    );
+    return {
+      room: r,
+      isAvailable: isAvail,
+    };
+  });
+
+  const handleClose = () => {
+    setCheckInRoom(null);
+    setEditingBooking(null);
+    setErrorMessage(null);
+  };
 
   const handleRoomChange = (newRoomId: string) => {
     setSelectedRoomId(newRoomId);
@@ -99,7 +199,32 @@ export const CheckInModal: React.FC = () => {
 
   const handleSelectPresetTariff = (amount: number) => {
     setTariffPerDay(amount);
-    setAdvanceAmount(amount + (hasExtraBed ? extraBedCount * 150 : 0));
+    const newDaily = amount + (hasExtraBed ? extraBedCount * 150 : 0);
+    const newTotal = newDaily * expectedCheckOutDays;
+    setAdvanceAmount(newTotal);
+  };
+
+  // Quick date preset selectors
+  const setQuickDatePreset = (preset: 'now' | '2days' | '1month' | '2months') => {
+    const target = new Date();
+    if (preset === 'now') {
+      const tzOffset = target.getTimezoneOffset() * 60000;
+      setCheckInTime(new Date(target.getTime() - tzOffset).toISOString().slice(0, 16));
+      return;
+    }
+
+    if (preset === '2days') {
+      target.setDate(target.getDate() + 2);
+    } else if (preset === '1month') {
+      target.setMonth(target.getMonth() + 1);
+    } else if (preset === '2months') {
+      target.setMonth(target.getMonth() + 2);
+    }
+
+    // Set check-in hour to standard 12:00 PM for future bookings
+    target.setHours(12, 0, 0, 0);
+    const tzOffset = target.getTimezoneOffset() * 60000;
+    setCheckInTime(new Date(target.getTime() - tzOffset).toISOString().slice(0, 16));
   };
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -128,54 +253,117 @@ export const CheckInModal: React.FC = () => {
       return;
     }
 
-    const checkInDate = new Date(checkInTime || Date.now());
-    const expectedCheckoutDate = new Date(
-      checkInDate.getTime() + expectedCheckOutDays * 24 * 60 * 60 * 1000
+    const advanceVal = advanceAmount === '' ? 0 : Number(advanceAmount);
+    if (isNaN(advanceVal) || advanceVal < 0) {
+      setErrorMessage('Advance amount cannot be negative.');
+      return;
+    }
+    if (advanceVal > totalAgreedAmount) {
+      setErrorMessage(
+        `Advance amount (₹${advanceVal}) cannot exceed the total agreed stay amount of ${formatCurrency(totalAgreedAmount)}.`
+      );
+      return;
+    }
+
+    // Check collision for chosen room
+    const isRoomFree = isRoomAvailable(
+      activeRoom.id,
+      checkInDate.toISOString(),
+      expectedCheckoutDate.toISOString(),
+      editingBooking?.id
     );
 
-    try {
-      checkIn({
-        roomId: activeRoom.id,
-        guest: {
-          fullName: fullName.trim(),
-          primaryPhone: primaryPhone.trim(),
-          alternatePhone: alternatePhone.trim() || undefined,
-          idProofType,
-          idNumber: idNumber.trim(),
-          vehicleNumber: vehicleNumber.trim() || undefined,
-          homeCity: homeCity.trim(),
-          homeState: homeState.trim(),
-          adults: Number(adults) || 1,
-          children: Number(children) || 0,
-        },
-        tariffPerDay: Number(tariffPerDay),
-        billingCycleType,
-        isAcOpted,
-        hasExtraBed,
-        extraBedCount: hasExtraBed ? extraBedCount : 0,
-        checkInTime: checkInDate.toISOString(),
-        expectedCheckOutTime: expectedCheckoutDate.toISOString(),
-        advancePayment: {
-          amount: Number(advanceAmount) || 0,
-          method: paymentMethod,
-          referenceNumber: paymentRef.trim() || undefined,
-        },
-        initialNote: initialNote.trim() || undefined,
-      });
+    if (!isRoomFree) {
+      setErrorMessage(
+        `Room ${activeRoom.number} is already booked or occupied for the selected dates (${formatDateOnly(
+          checkInDate.toISOString()
+        )} to ${formatDateOnly(expectedCheckoutDate.toISOString())}). Please select another available room.`
+      );
+      return;
+    }
 
-      setCheckInRoom(null);
+    try {
+      if (editingBooking) {
+        // Update existing reservation
+        updateBooking(editingBooking.id, {
+          roomId: activeRoom.id,
+          roomNumber: activeRoom.number,
+          floor: activeRoom.floor,
+          guest: {
+            ...editingBooking.guest,
+            fullName: fullName.trim(),
+            primaryPhone: primaryPhone.trim(),
+            alternatePhone: alternatePhone.trim() || undefined,
+            idProofType,
+            idNumber: idNumber.trim(),
+            vehicleNumber: vehicleNumber.trim() || undefined,
+            homeCity: homeCity.trim(),
+            homeState: homeState.trim(),
+            adults: Number(adults) || 1,
+            children: Number(children) || 0,
+          },
+          tariffPerDay: Number(tariffPerDay),
+          billingCycleType,
+          isAcOpted,
+          hasExtraBed,
+          extraBedCount: hasExtraBed ? extraBedCount : 0,
+          checkInTime: checkInDate.toISOString(),
+          expectedCheckOutTime: expectedCheckoutDate.toISOString(),
+          totalAgreedAmount,
+          notes: initialNote.trim() || undefined,
+        });
+      } else {
+        // Create new check-in or advance reservation
+        checkIn({
+          roomId: activeRoom.id,
+          guest: {
+            fullName: fullName.trim(),
+            primaryPhone: primaryPhone.trim(),
+            alternatePhone: alternatePhone.trim() || undefined,
+            idProofType,
+            idNumber: idNumber.trim(),
+            vehicleNumber: vehicleNumber.trim() || undefined,
+            homeCity: homeCity.trim(),
+            homeState: homeState.trim(),
+            adults: Number(adults) || 1,
+            children: Number(children) || 0,
+          },
+          tariffPerDay: Number(tariffPerDay),
+          billingCycleType,
+          isAcOpted,
+          hasExtraBed,
+          extraBedCount: hasExtraBed ? extraBedCount : 0,
+          checkInTime: checkInDate.toISOString(),
+          expectedCheckOutTime: expectedCheckoutDate.toISOString(),
+          totalAgreedAmount,
+          advancePayment: {
+            amount: advanceVal,
+            method: paymentMethod,
+            referenceNumber: paymentRef.trim() || undefined,
+          },
+          initialNote: initialNote.trim() || undefined,
+        });
+      }
+
+      handleClose();
     } catch (err: any) {
-      setErrorMessage(err.message || 'Failed to complete check-in.');
+      setErrorMessage(err.message || 'Failed to complete booking.');
     }
   };
 
-  const calculatedDailyTotal = tariffPerDay + (hasExtraBed ? extraBedCount * 150 : 0);
+  const getDaysUntilArrival = () => {
+    const diffMs = checkInDate.getTime() - Date.now();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+    if (diffDays <= 0) return 'Today';
+    if (diffDays === 1) return 'Tomorrow';
+    return `in ${diffDays} days`;
+  };
 
   return (
     <div
       id="modal-checkin-overlay"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-stone-950/70 backdrop-blur-xs overflow-y-auto"
-      onClick={() => setCheckInRoom(null)}
+      onClick={handleClose}
     >
       <div
         id="modal-checkin-content"
@@ -185,17 +373,32 @@ export const CheckInModal: React.FC = () => {
         {/* Modal Header */}
         <div className="bg-stone-900 text-white px-6 py-4 flex items-center justify-between border-b border-stone-800">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-emerald-600/30 text-emerald-400 rounded-lg border border-emerald-500/30">
-              <LogIn className="w-5 h-5" />
+            <div
+              className={`p-2 rounded-lg border ${
+                isFutureBooking
+                  ? 'bg-amber-600/30 text-amber-400 border-amber-500/30'
+                  : 'bg-emerald-600/30 text-emerald-400 border-emerald-500/30'
+              }`}
+            >
+              {isFutureBooking ? <CalendarCheck className="w-5 h-5" /> : <LogIn className="w-5 h-5" />}
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-lg font-bold text-white">
-                  Fast Front-Desk Check-In — Room {activeRoom.number}
+                  {editingBooking
+                    ? `Edit Reservation — Room ${activeRoom.number}`
+                    : isFutureBooking
+                    ? `Advance Reservation — Room ${activeRoom.number}`
+                    : `Fast Front-Desk Check-In — Room ${activeRoom.number}`}
                 </h2>
                 <span className="text-xs px-2.5 py-0.5 rounded-full font-semibold bg-stone-800 text-stone-300 border border-stone-700">
                   {activeRoom.floor}
                 </span>
+                {isFutureBooking && (
+                  <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                    Future Stay ({getDaysUntilArrival()})
+                  </span>
+                )}
               </div>
               <p className="text-xs text-stone-400">
                 Sri Bhavani Vasavi Bhavan • Tiruvannamalai
@@ -203,38 +406,152 @@ export const CheckInModal: React.FC = () => {
             </div>
           </div>
           <button
-            onClick={() => setCheckInRoom(null)}
+            onClick={handleClose}
             className="p-1.5 text-stone-400 hover:text-white rounded-lg hover:bg-stone-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
+        {/* Future Booking Informative Banner */}
+        {isFutureBooking && !editingBooking && (
+          <div className="bg-amber-50 border-b border-amber-200 px-6 py-2.5 flex items-center gap-2 text-xs text-amber-950 font-medium">
+            <CalendarCheck className="w-4 h-4 text-amber-700 shrink-0" />
+            <span>
+              <strong>Advance Reservation Mode:</strong> Check-in is scheduled for{' '}
+              <strong>{formatDateOnly(checkInDate.toISOString())}</strong> ({getDaysUntilArrival()}). Room{' '}
+              <strong>{activeRoom.number}</strong> will be reserved for those dates and remains{' '}
+              <span className="text-emerald-800 font-bold">AVAILABLE</span> today for walk-in guests.
+            </span>
+          </div>
+        )}
+
         {/* Error Alert */}
         {errorMessage && (
           <div className="bg-rose-50 border-b border-rose-200 px-6 py-2.5 text-xs text-rose-800 font-semibold flex items-center gap-2">
-            <span>⚠️ {errorMessage}</span>
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>{errorMessage}</span>
           </div>
         )}
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="p-6 space-y-6 max-h-[80vh] overflow-y-auto text-xs sm:text-sm">
-          {/* Section 1: Room Selection, AC Mode & Custom Demand Pricing */}
+          {/* Section 1: Room Allocation, Stay Dates & Pricing */}
           <div className="bg-stone-50 p-4 rounded-xl border border-stone-200 space-y-4">
             <div className="flex items-center justify-between border-b border-stone-200 pb-2">
               <span className="font-bold text-stone-900 text-xs uppercase tracking-wider flex items-center gap-1.5">
                 <ShieldCheck className="w-4 h-4 text-amber-600" />
-                1. Room Allocation & Custom Demand Pricing
+                1. Stay Dates, Room Allocation & Agreed Tariff
               </span>
-              <span className="text-xs text-stone-500">No fixed prices • Set based on demand</span>
+              <span className="text-xs text-stone-500">Flexible dates & custom demand pricing</span>
+            </div>
+
+            {/* Quick Date Presets */}
+            <div>
+              <label className="block text-xs font-semibold text-stone-700 mb-1.5 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-stone-500" />
+                Select Guest Stay Date (Walk-In or Advance Reservation):
+              </label>
+              <div className="flex flex-wrap items-center gap-1.5 mb-2">
+                <button
+                  type="button"
+                  onClick={() => setQuickDatePreset('now')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors cursor-pointer ${
+                    !isFutureBooking
+                      ? 'bg-stone-900 text-white shadow-xs'
+                      : 'bg-white text-stone-700 border border-stone-300 hover:bg-stone-100'
+                  }`}
+                >
+                  ⚡ Today (Walk-In Now)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuickDatePreset('2days')}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-stone-700 border border-stone-300 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-900 transition-colors cursor-pointer"
+                >
+                  +2 Days Later
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuickDatePreset('1month')}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-stone-700 border border-stone-300 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-900 transition-colors cursor-pointer"
+                >
+                  +1 Month Later
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setQuickDatePreset('2months')}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white text-stone-700 border border-stone-300 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-900 transition-colors cursor-pointer"
+                >
+                  +2 Months Later
+                </button>
+              </div>
+
+              {/* Exact Check-in Time & Duration Pickers */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-stone-500" />
+                    Guest Check-In Date & Time <span className="text-rose-600">*</span>
+                  </label>
+                  <input
+                    id="checkin-time-input"
+                    type="datetime-local"
+                    required
+                    value={checkInTime}
+                    onChange={(e) => setCheckInTime(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg text-xs font-bold text-stone-900 focus:ring-2 focus:ring-stone-900"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1">
+                    <Calendar className="w-3.5 h-3.5 text-stone-500" />
+                    Expected Stay Duration
+                  </label>
+                  <select
+                    id="checkin-expected-days"
+                    value={expectedCheckOutDays}
+                    onChange={(e) => {
+                      const days = Number(e.target.value);
+                      setExpectedCheckOutDays(days);
+                      const newTotal = calculatedDailyTotal * days;
+                      setAdvanceAmount(newTotal);
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg text-xs font-semibold text-stone-800"
+                  >
+                    <option value="1">1 Day (Girivalam / Darshan)</option>
+                    <option value="2">2 Days (Weekend Stay)</option>
+                    <option value="3">3 Days (Festival Stay)</option>
+                    <option value="5">5 Days (Extended Stay)</option>
+                    <option value="7">7 Days (1 Week Stay)</option>
+                    <option value="10">10 Days (Pilgrim Camp)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-stone-700 mb-1">
+                    Billing Cycle Rule
+                  </label>
+                  <select
+                    id="checkin-cycle-select"
+                    value={billingCycleType}
+                    onChange={(e) => setBillingCycleType(e.target.value as BillingCycleType)}
+                    className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg text-xs font-medium text-stone-900"
+                  >
+                    <option value="24_HOUR_CYCLE">24-Hour Cycle (Pilgrim Standard)</option>
+                    <option value="STANDARD_11AM">Standard 11:00 AM Checkout</option>
+                  </select>
+                </div>
+              </div>
             </div>
 
             {/* Room Selector & AC Toggle */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-stone-200">
               {/* Room Selector */}
               <div>
                 <label className="block text-xs font-semibold text-stone-700 mb-1">
-                  Assigned Room
+                  Assigned Room (Availability for selected stay dates)
                 </label>
                 <select
                   id="checkin-room-select"
@@ -242,9 +559,10 @@ export const CheckInModal: React.FC = () => {
                   onChange={(e) => handleRoomChange(e.target.value)}
                   className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg text-xs font-bold text-stone-900 focus:ring-2 focus:ring-stone-900"
                 >
-                  {availableRooms.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      Room {r.number} ({r.floor} • {r.isAcEquipped ? 'AC Room' : 'Non-AC Room'} • {r.bedType})
+                  {availableRooms.map(({ room: r, isAvailable }) => (
+                    <option key={r.id} value={r.id} disabled={!isAvailable && r.id !== selectedRoomId}>
+                      Room {r.number} ({r.floor} • {r.isAcEquipped ? 'AC Unit' : 'Non-AC'} • {r.bedType}){' '}
+                      {!isAvailable ? '— [Already Booked]' : '— [Available]'}
                     </option>
                   ))}
                 </select>
@@ -284,14 +602,9 @@ export const CheckInModal: React.FC = () => {
                         Non-AC (Turn OFF AC)
                       </button>
                     </div>
-                    <p className="text-[10px] text-stone-500 mt-1">
-                      {isAcOpted
-                        ? 'Customer opted for AC: unit is turned ON for this stay.'
-                        : 'Customer opted for Non-AC: AC unit will be powered OFF.'}
-                    </p>
                   </>
                 ) : (
-                  <>
+                  <div>
                     <label className="block text-xs font-semibold text-stone-700 mb-1">
                       Room AC Configuration
                     </label>
@@ -299,26 +612,24 @@ export const CheckInModal: React.FC = () => {
                       <Fan className="w-4 h-4 text-amber-700 shrink-0" />
                       <div>
                         <span className="text-xs font-bold text-amber-950 block">Dedicated Non-AC Room</span>
-                        <span className="text-[10px] text-amber-800 block">Room is equipped with ceiling fan. Standard Non-AC tariff applies.</span>
+                        <span className="text-[10px] text-amber-800 block">Equipped with ceiling fan.</span>
                       </div>
                     </div>
-                  </>
+                  </div>
                 )}
               </div>
             </div>
 
             {/* Custom Demand Tariff Entry */}
-            <div>
+            <div className="pt-2 border-t border-stone-200">
               <div className="flex items-center justify-between mb-1">
                 <label className="text-xs font-bold text-stone-900">
-                  Agreed Daily Room Tariff (₹ / day) — Custom Demand Pricing <span className="text-rose-600">*</span>
+                  Agreed Daily Room Tariff (₹ / day) — Custom Demand Rate <span className="text-rose-600">*</span>
                 </label>
-                <span className="text-[11px] text-stone-500 font-medium">
-                  Quick Suggestions:
-                </span>
+                <span className="text-[11px] text-stone-500 font-medium">Quick Suggestions:</span>
               </div>
               <p className="text-[10px] text-stone-500 mb-1.5">
-                Pricing varies based on temple festival & demand. Enter any custom agreed rate:
+                Pricing varies based on demand & festivals. Enter any custom agreed rate:
               </p>
 
               {/* Fast Demand Presets */}
@@ -339,22 +650,24 @@ export const CheckInModal: React.FC = () => {
                 ))}
               </div>
 
-              {/* Open numeric tariff input */}
+              {/* Numeric Tariff Input with step="any" and min="0" to allow any round or decimal number */}
               <div className="relative max-w-xs">
                 <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-stone-500 font-bold text-sm">₹</span>
                 <input
                   id="checkin-tariff-input"
                   type="number"
-                  min="1"
-                  step="50"
+                  min="0"
+                  step="any"
                   required
-                  value={tariffPerDay || ''}
+                  value={tariffPerDay === 0 ? '' : tariffPerDay}
                   onChange={(e) => {
-                    const val = Number(e.target.value);
+                    const val = e.target.value === '' ? 0 : parseFloat(e.target.value);
                     setTariffPerDay(val);
-                    setAdvanceAmount(val + (hasExtraBed ? extraBedCount * 150 : 0));
+                    const newDaily = val + (hasExtraBed ? extraBedCount * 150 : 0);
+                    const newTotal = newDaily * expectedCheckOutDays;
+                    setAdvanceAmount(newTotal);
                   }}
-                  placeholder="Enter custom rate for today"
+                  placeholder="Enter custom rate"
                   className="w-full pl-8 pr-3 py-2 bg-white border-2 border-stone-300 focus:border-stone-900 rounded-lg text-sm font-black text-stone-900"
                 />
               </div>
@@ -372,7 +685,8 @@ export const CheckInModal: React.FC = () => {
                       const checked = e.target.checked;
                       setHasExtraBed(checked);
                       const bedAddition = checked ? extraBedCount * 150 : 0;
-                      setAdvanceAmount(tariffPerDay + bedAddition);
+                      const newDaily = tariffPerDay + bedAddition;
+                      setAdvanceAmount(newDaily * expectedCheckOutDays);
                     }}
                     className="w-4 h-4 rounded border-stone-300 text-stone-900 focus:ring-stone-900"
                   />
@@ -396,7 +710,8 @@ export const CheckInModal: React.FC = () => {
                         onClick={() => {
                           const newCount = Math.max(1, extraBedCount - 1);
                           setExtraBedCount(newCount);
-                          setAdvanceAmount(tariffPerDay + newCount * 150);
+                          const newDaily = tariffPerDay + newCount * 150;
+                          setAdvanceAmount(newDaily * expectedCheckOutDays);
                         }}
                         className="p-1.5 text-stone-600 hover:text-stone-900"
                       >
@@ -408,7 +723,8 @@ export const CheckInModal: React.FC = () => {
                         onClick={() => {
                           const newCount = Math.min(3, extraBedCount + 1);
                           setExtraBedCount(newCount);
-                          setAdvanceAmount(tariffPerDay + newCount * 150);
+                          const newDaily = tariffPerDay + newCount * 150;
+                          setAdvanceAmount(newDaily * expectedCheckOutDays);
                         }}
                         className="p-1.5 text-stone-600 hover:text-stone-900"
                       >
@@ -426,64 +742,14 @@ export const CheckInModal: React.FC = () => {
             {/* Total Daily Rate Indicator */}
             <div className="bg-amber-50/70 border border-amber-200 rounded-lg p-3 flex items-center justify-between text-xs text-amber-950">
               <div>
-                <span className="font-bold">Total Daily Agreed Rate:</span>
+                <span className="font-bold">Agreed Total Tariff:</span>
                 <span className="text-[11px] text-stone-600 ml-1">
-                  Room ₹{tariffPerDay} {hasExtraBed ? `+ Extra Bed ₹${extraBedCount * 150}` : ''} ({isAcOpted ? 'AC' : 'Non-AC'})
+                  ₹{calculatedDailyTotal}/day × {expectedCheckOutDays} day{expectedCheckOutDays > 1 ? 's' : ''} ({isAcOpted ? 'AC' : 'Non-AC'})
                 </span>
               </div>
               <span className="text-base font-black text-amber-950">
-                {formatCurrency(calculatedDailyTotal)} / day
+                {formatCurrency(totalAgreedAmount)} Total
               </span>
-            </div>
-
-            {/* Billing Cycle & Expected Duration */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-              <div>
-                <label className="block text-xs font-semibold text-stone-700 mb-1">
-                  Billing Cycle Rule
-                </label>
-                <select
-                  id="checkin-cycle-select"
-                  value={billingCycleType}
-                  onChange={(e) => setBillingCycleType(e.target.value as BillingCycleType)}
-                  className="w-full px-3 py-2 bg-white border border-stone-300 rounded-lg text-xs font-medium text-stone-900"
-                >
-                  <option value="24_HOUR_CYCLE">24-Hour Cycle (Pilgrim Standard)</option>
-                  <option value="STANDARD_11AM">Standard 11:00 AM Checkout</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1">
-                  <Clock className="w-3.5 h-3.5 text-stone-500" />
-                  Check-In Time
-                </label>
-                <input
-                  id="checkin-time-input"
-                  type="datetime-local"
-                  value={checkInTime}
-                  onChange={(e) => setCheckInTime(e.target.value)}
-                  className="w-full px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs text-stone-800"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-stone-700 mb-1 flex items-center gap-1">
-                  <Calendar className="w-3.5 h-3.5 text-stone-500" />
-                  Expected Stay Duration
-                </label>
-                <select
-                  id="checkin-expected-days"
-                  value={expectedCheckOutDays}
-                  onChange={(e) => setExpectedCheckOutDays(Number(e.target.value))}
-                  className="w-full px-3 py-1.5 bg-white border border-stone-300 rounded-lg text-xs text-stone-800"
-                >
-                  <option value="1">1 Day (Girivalam / Darshan)</option>
-                  <option value="2">2 Days (Weekend Stay)</option>
-                  <option value="3">3 Days (Festival Stay)</option>
-                  <option value="5">5 Days (Extended Stay)</option>
-                </select>
-              </div>
             </div>
           </div>
 
@@ -658,17 +924,60 @@ export const CheckInModal: React.FC = () => {
           </div>
 
           {/* Section 3: Advance Payment Collection */}
-          <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-200 space-y-3">
-            <span className="font-bold text-emerald-950 text-xs uppercase tracking-wider flex items-center gap-1.5 border-b border-emerald-200 pb-1.5">
-              <IndianRupee className="w-4 h-4 text-emerald-600" />
-              3. Advance Payment Collection
-            </span>
+          <div className="bg-emerald-50/50 p-4 rounded-xl border border-emerald-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
+              <span className="font-bold text-emerald-950 text-xs uppercase tracking-wider flex items-center gap-1.5">
+                <IndianRupee className="w-4 h-4 text-emerald-600" />
+                3. Advance Payment Collection & Live Balance
+              </span>
+              <span className="text-xs text-emerald-700 font-semibold">
+                Accepts ₹0 to full amount ({formatCurrency(totalAgreedAmount)})
+              </span>
+            </div>
+
+            {/* Quick Amount Buttons */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs font-semibold text-stone-600 mr-1">Quick Sets:</span>
+              <button
+                type="button"
+                onClick={() => setAdvanceAmount(totalAgreedAmount)}
+                className={`px-2.5 py-1 rounded-md text-xs font-bold transition-colors cursor-pointer ${
+                  numAdvance === totalAgreedAmount
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'bg-white text-emerald-800 border border-emerald-300 hover:bg-emerald-50'
+                }`}
+              >
+                Full Advance ({formatCurrency(totalAgreedAmount)})
+              </button>
+
+              {totalAgreedAmount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAdvanceAmount(Math.round(totalAgreedAmount / 2))}
+                  className="px-2.5 py-1 rounded-md text-xs font-semibold bg-white text-stone-700 border border-stone-300 hover:bg-stone-50 cursor-pointer"
+                >
+                  Partial 50% ({formatCurrency(Math.round(totalAgreedAmount / 2))})
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setAdvanceAmount(0)}
+                className={`px-2.5 py-1 rounded-md text-xs font-semibold transition-colors cursor-pointer ${
+                  numAdvance === 0
+                    ? 'bg-stone-800 text-white'
+                    : 'bg-white text-stone-700 border border-stone-300 hover:bg-stone-50'
+                }`}
+              >
+                Zero Advance (₹0)
+              </button>
+            </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {/* Advance Amount */}
+              {/* Advance Amount (Allows any value from 0 to total agreed, decimals supported with step="any") */}
               <div>
                 <label className="block text-xs font-semibold text-stone-700 mb-1">
-                  Advance Collected (₹)
+                  Advance Amount (₹)
                 </label>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-stone-500">₹</span>
@@ -676,12 +985,19 @@ export const CheckInModal: React.FC = () => {
                     id="checkin-advance-amount"
                     type="number"
                     min="0"
-                    step="50"
+                    step="any"
                     value={advanceAmount}
-                    onChange={(e) => setAdvanceAmount(Number(e.target.value))}
-                    className="w-full pl-7 pr-3 py-2 bg-white border border-stone-300 rounded-lg text-xs sm:text-sm font-bold text-stone-900"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setAdvanceAmount(val === '' ? '' : parseFloat(val));
+                    }}
+                    placeholder="Enter advance amount"
+                    className="w-full pl-7 pr-3 py-2 bg-white border border-stone-300 rounded-lg text-xs sm:text-sm font-bold text-stone-900 focus:ring-2 focus:ring-emerald-600"
                   />
                 </div>
+                <p className="text-[10px] text-stone-500 mt-1">
+                  Enter any amount from ₹0 up to {formatCurrency(totalAgreedAmount)}.
+                </p>
               </div>
 
               {/* Payment Mode */}
@@ -695,7 +1011,7 @@ export const CheckInModal: React.FC = () => {
                       type="button"
                       key={mode}
                       onClick={() => setPaymentMethod(mode)}
-                      className={`py-2 px-1 text-xs font-bold rounded-lg border text-center transition-colors ${
+                      className={`py-2 px-1 text-xs font-bold rounded-lg border text-center transition-colors cursor-pointer ${
                         paymentMethod === mode
                           ? 'bg-emerald-700 text-white border-emerald-700 shadow-xs'
                           : 'bg-white text-stone-700 border-stone-300 hover:bg-stone-50'
@@ -722,6 +1038,47 @@ export const CheckInModal: React.FC = () => {
                 />
               </div>
             </div>
+
+            {/* Real-time Financial Breakdown Card */}
+            <div className="bg-white p-3.5 rounded-xl border border-emerald-200 shadow-xs grid grid-cols-3 gap-2 text-center">
+              <div className="border-r border-stone-100 pr-2">
+                <span className="text-[10px] uppercase font-bold text-stone-500 block">Total Agreed</span>
+                <span className="text-sm sm:text-base font-black text-stone-900 block mt-0.5">
+                  {formatCurrency(totalAgreedAmount)}
+                </span>
+                <span className="text-[10px] text-stone-400 block">
+                  {expectedCheckOutDays} day{expectedCheckOutDays > 1 ? 's' : ''} stay
+                </span>
+              </div>
+
+              <div className="border-r border-stone-100 px-2">
+                <span className="text-[10px] uppercase font-bold text-emerald-700 block">Advance Collected</span>
+                <span className="text-sm sm:text-base font-black text-emerald-700 block mt-0.5">
+                  {formatCurrency(numAdvance)}
+                </span>
+                <span className="text-[10px] text-emerald-600 block">
+                  {numAdvance === totalAgreedAmount
+                    ? '100% Paid'
+                    : numAdvance > 0
+                    ? `${Math.round((numAdvance / (totalAgreedAmount || 1)) * 100)}% Paid`
+                    : 'Unpaid'}
+                </span>
+              </div>
+
+              <div className="pl-2">
+                <span className="text-[10px] uppercase font-bold text-stone-500 block">Remaining Due</span>
+                <span
+                  className={`text-sm sm:text-base font-black block mt-0.5 ${
+                    remainingBalance > 0 ? 'text-rose-700' : 'text-emerald-700'
+                  }`}
+                >
+                  {formatCurrency(remainingBalance)}
+                </span>
+                <span className="text-[10px] text-stone-500 block">
+                  {remainingBalance === 0 ? 'Zero balance due' : 'Payable on departure'}
+                </span>
+              </div>
+            </div>
           </div>
 
           {/* Section 4: Front Desk Remarks */}
@@ -733,7 +1090,7 @@ export const CheckInModal: React.FC = () => {
             <input
               id="checkin-initial-note"
               type="text"
-              placeholder="e.g. Pilgrims visiting Ramanasramam & temple; requested 4:30 AM hot water."
+              placeholder="e.g. Pilgrims visiting temple; requested 4:30 AM hot water."
               value={initialNote}
               onChange={(e) => setInitialNote(e.target.value)}
               className="w-full px-3 py-2 border border-stone-300 rounded-lg text-xs sm:text-sm text-stone-900"
@@ -744,7 +1101,7 @@ export const CheckInModal: React.FC = () => {
           <div className="flex items-center justify-between pt-4 border-t border-stone-200">
             <button
               type="button"
-              onClick={() => setCheckInRoom(null)}
+              onClick={handleClose}
               className="px-4 py-2 border border-stone-300 text-stone-700 hover:bg-stone-100 rounded-xl text-xs sm:text-sm font-semibold transition-colors"
             >
               Cancel
@@ -753,10 +1110,18 @@ export const CheckInModal: React.FC = () => {
             <button
               id="btn-submit-checkin"
               type="submit"
-              className="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md transition-colors"
+              className={`inline-flex items-center gap-2 px-6 py-2.5 rounded-xl text-xs sm:text-sm font-bold shadow-md transition-colors ${
+                isFutureBooking
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
             >
-              <LogIn className="w-4 h-4" />
-              Confirm Check-In — Room {activeRoom.number}
+              {isFutureBooking ? <CalendarCheck className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
+              {editingBooking
+                ? `Save Changes — Room ${activeRoom.number}`
+                : isFutureBooking
+                ? `Confirm Advance Reservation — Room ${activeRoom.number}`
+                : `Confirm Check-In — Room ${activeRoom.number}`}
             </button>
           </div>
         </form>

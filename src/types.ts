@@ -86,6 +86,8 @@ export interface ConversationLog {
   timestamp: string;
 }
 
+export type BookingStatus = 'RESERVED' | 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+
 export interface Booking {
   id: string;
   bookingNumber: string;
@@ -102,14 +104,15 @@ export interface Booking {
   checkInTime: string; // ISO string
   expectedCheckOutTime: string; // ISO string
   actualCheckOutTime?: string;
-  status: 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+  status: BookingStatus;
   charges: RoomCharge[];
   payments: Payment[];
   conversations: ConversationLog[];
   gstEnabled?: boolean;
   gstRate?: number;
   notes?: string;
-  createdAt: string;
+  totalAgreedAmount?: number;
+  createdAt: string; // Reservation creation timestamp
 }
 
 export interface BillCalculation {

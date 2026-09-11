@@ -15,16 +15,19 @@ import {
   Wrench,
   RefreshCw,
   Lock,
+  CalendarCheck,
 } from 'lucide-react';
 
 export const Header: React.FC = () => {
   const {
     rooms,
+    bookings,
     selectedStatus,
     setSelectedStatus,
     isSynced,
     syncNow,
     setIsDailyLedgerOpen,
+    setIsReservationsModalOpen,
     setIsBlueprintOpen,
     resetToSampleData,
   } = usePMS();
@@ -118,6 +121,21 @@ export const Header: React.FC = () => {
                 })}
               </span>
             </div>
+
+            <button
+              id="btn-reservations-modal"
+              onClick={() => setIsReservationsModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-700/90 hover:bg-amber-600 text-white text-xs font-semibold rounded-lg shadow transition-colors cursor-pointer"
+              title="View Advance Reservations & Future Bookings"
+            >
+              <CalendarCheck className="w-3.5 h-3.5 text-amber-300" />
+              <span>Reservations</span>
+              {bookings.filter((b) => b.status === 'RESERVED').length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-black bg-amber-300 text-amber-950">
+                  {bookings.filter((b) => b.status === 'RESERVED').length}
+                </span>
+              )}
+            </button>
 
             <button
               id="btn-daily-ledger"

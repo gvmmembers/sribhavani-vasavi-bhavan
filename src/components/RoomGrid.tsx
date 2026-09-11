@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { usePMS } from '../context/PMSContext';
 import { Room, RoomStatus, FloorName } from '../types';
-import { formatCurrency, calculateBill } from '../utils/billing';
+import { formatCurrency, calculateBill, formatDateOnly } from '../utils/billing';
 import {
   Search,
   Wind,
@@ -21,12 +21,15 @@ import {
   Check,
   Power,
   RefreshCw,
+  CalendarCheck,
 } from 'lucide-react';
 
 export const RoomGrid: React.FC = () => {
   const {
     rooms,
     getActiveBookingForRoom,
+    getUpcomingBookingsForRoom,
+    setIsReservationsModalOpen,
     setCheckInRoom,
     setViewingRoom,
     markRoomCleaned,
@@ -62,10 +65,17 @@ export const RoomGrid: React.FC = () => {
       const q = searchQuery.toLowerCase().trim();
       const matchRoom = room.number.toLowerCase().includes(q);
       const activeBooking = getActiveBookingForRoom(room.id);
-      const matchGuest = activeBooking?.guest.fullName.toLowerCase().includes(q);
-      const matchPhone = activeBooking?.guest.primaryPhone.includes(q);
+      const upcomingBookings = getUpcomingBookingsForRoom(room.id);
+      const matchGuest =
+        activeBooking?.guest.fullName.toLowerCase().includes(q) ||
+        upcomingBookings.some((u) => u.guest.fullName.toLowerCase().includes(q));
+      const matchPhone =
+        activeBooking?.guest.primaryPhone.includes(q) ||
+        upcomingBookings.some((u) => u.guest.primaryPhone.includes(q));
       const matchVehicle = activeBooking?.guest.vehicleNumber?.toLowerCase().includes(q);
-      const matchCity = activeBooking?.guest.homeCity.toLowerCase().includes(q);
+      const matchCity =
+        activeBooking?.guest.homeCity.toLowerCase().includes(q) ||
+        upcomingBookings.some((u) => u.guest.homeCity.toLowerCase().includes(q));
       return matchRoom || matchGuest || matchPhone || matchVehicle || matchCity;
     }
 
@@ -111,6 +121,7 @@ export const RoomGrid: React.FC = () => {
 
   const renderRoomCard = (room: Room) => {
     const booking = getActiveBookingForRoom(room.id);
+    const upcomingBookings = getUpcomingBookingsForRoom(room.id);
     const style = getStatusBadgeStyle(room.status);
     const bill = booking ? calculateBill(booking) : null;
 
@@ -138,6 +149,24 @@ export const RoomGrid: React.FC = () => {
               <p className="text-[11px] text-stone-500 mt-1">
                 {room.bedType} • Max {room.maxOccupancy} Guests
               </p>
+
+              {/* Upcoming Reservation indicator */}
+              {upcomingBookings.length > 0 && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsReservationsModalOpen(true);
+                  }}
+                  className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-900 bg-amber-100 hover:bg-amber-200 border border-amber-300 px-2 py-0.5 rounded-md mt-1.5 transition-colors cursor-pointer"
+                  title="Click to view advance reservations"
+                >
+                  <CalendarCheck className="w-3 h-3 text-amber-700" />
+                  <span>
+                    {upcomingBookings.length} Upcoming (Next: {formatDateOnly(upcomingBookings[0].checkInTime)})
+                  </span>
+                </button>
+              )}
             </div>
 
             {/* Status Pill */}

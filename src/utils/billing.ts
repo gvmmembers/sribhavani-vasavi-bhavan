@@ -2,7 +2,15 @@ import { Booking, BillCalculation } from '../types';
 
 export function calculateBill(booking: Booking, checkoutTime?: string): BillCalculation {
   const checkIn = new Date(booking.checkInTime);
-  const checkOut = checkoutTime ? new Date(checkoutTime) : new Date();
+  const isFutureOrReserved = booking.status === 'RESERVED' || checkIn.getTime() > Date.now();
+
+  const checkOut = checkoutTime
+    ? new Date(checkoutTime)
+    : booking.actualCheckOutTime
+    ? new Date(booking.actualCheckOutTime)
+    : isFutureOrReserved
+    ? new Date(booking.expectedCheckOutTime)
+    : new Date();
 
   const diffMs = Math.max(0, checkOut.getTime() - checkIn.getTime());
   const diffHours = diffMs / (1000 * 60 * 60);
@@ -49,7 +57,8 @@ export function calculateBill(booking: Booking, checkoutTime?: string): BillCalc
   const grandTotal = subtotal + gstAmount;
 
   const totalPaidAdvance = (booking.payments || []).reduce((sum, p) => sum + p.amount, 0);
-  const balanceDue = Math.max(0, grandTotal - totalPaidAdvance);
+  const rawBalance = grandTotal - totalPaidAdvance;
+  const balanceDue = Math.max(0, Math.round(rawBalance * 100) / 100);
 
   return {
     tariffPerDay: booking.tariffPerDay,
@@ -61,17 +70,20 @@ export function calculateBill(booking: Booking, checkoutTime?: string): BillCalc
     subtotal,
     gstAmount,
     grandTotal,
-    totalPaidAdvance,
+    totalPaidAdvance: Math.round(totalPaidAdvance * 100) / 100,
     balanceDue,
   };
 }
 
 export function formatCurrency(amount: number): string {
+  const rounded = Math.round(amount * 100) / 100;
+  const hasDecimals = rounded % 1 !== 0;
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
-    maximumFractionDigits: 0,
-  }).format(amount);
+    minimumFractionDigits: hasDecimals ? 2 : 0,
+    maximumFractionDigits: 2,
+  }).format(rounded);
 }
 
 export function formatDateTime(isoString: string): string {
