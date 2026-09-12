@@ -34,8 +34,8 @@ let mongoClient: MongoClient | null = null;
 let mongoDb: Db | null = null;
 let isMongoConnected = false;
 
-const MONGODB_URI = process.env.MONGODB_URI || '';
-const DB_NAME = process.env.MONGODB_DB_NAME || 'sribhavani_vasavi_pms';
+const MONGODB_URI = (process.env.MONGODB_URI || '').trim().replace(/^["']|["']$/g, '');
+const DB_NAME = (process.env.MONGODB_DB_NAME || 'sribhavani_vasavi_pms').trim().replace(/^["']|["']$/g, '');
 const STORE_DOC_ID = 'current_pms_store';
 
 // SSE Clients set
