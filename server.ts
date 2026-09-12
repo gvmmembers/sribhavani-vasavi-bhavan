@@ -114,7 +114,9 @@ async function initDatabase(): Promise<void> {
     console.log('[PMS Database] Connecting to MongoDB Atlas Cloud Database...');
     mongoClient = new MongoClient(MONGODB_URI, {
       maxPoolSize: 10,
-      serverSelectionTimeoutMS: 8000,
+      serverSelectionTimeoutMS: 10000,
+      connectTimeoutMS: 10000,
+      family: 4,
     });
     await mongoClient.connect();
     mongoDb = mongoClient.db(DB_NAME);
