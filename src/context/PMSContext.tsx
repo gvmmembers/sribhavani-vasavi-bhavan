@@ -29,6 +29,7 @@ interface PMSContextType {
 
   // Multi-device sync state
   isSynced: boolean;
+  isCloudDatabaseConnected: boolean;
   lastSyncTime: Date | null;
   syncNow: () => Promise<void>;
 
@@ -153,6 +154,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Sync state tracking
   const [isSynced, setIsSynced] = useState<boolean>(true);
+  const [isCloudDatabaseConnected, setIsCloudDatabaseConnected] = useState<boolean>(false);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(new Date());
   const serverVersionRef = useRef<number>(0);
   const isRehydratingRef = useRef<boolean>(false);
@@ -239,6 +241,10 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const handleIncomingServerData = useCallback(
     (data: any, isReset = false) => {
       if (!data || !Array.isArray(data.rooms)) return;
+
+      if (typeof data.isCloudDatabaseConnected === 'boolean') {
+        setIsCloudDatabaseConnected(data.isCloudDatabaseConnected);
+      }
 
       // Check if admin intentionally triggered a server-side reset/clear
       if (isReset || data.lastClearedAt) {
@@ -1096,6 +1102,7 @@ export const PMSProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedStatus,
         setSearchQuery,
         isSynced,
+        isCloudDatabaseConnected,
         lastSyncTime,
         syncNow: fetchStateFromServer,
         checkInRoom,

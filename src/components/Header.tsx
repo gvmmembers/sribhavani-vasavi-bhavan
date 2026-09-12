@@ -26,6 +26,7 @@ export const Header: React.FC = () => {
     selectedStatus,
     setSelectedStatus,
     isSynced,
+    isCloudDatabaseConnected,
     syncNow,
     setIsDailyLedgerOpen,
     setIsReservationsModalOpen,
@@ -94,15 +95,29 @@ export const Header: React.FC = () => {
             <button
               id="btn-multi-device-sync"
               onClick={() => syncNow()}
-              title="Cloud Synchronization active across all devices and browser tabs. Click to force reload."
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-stone-800/90 hover:bg-stone-800 text-stone-300 border border-stone-700 transition-colors"
+              title={
+                isCloudDatabaseConnected
+                  ? 'MongoDB Atlas Cloud Database Connected: All bookings and ledgers are permanently saved in the cloud.'
+                  : 'Syncing across devices. Connect MONGODB_URI on Render for permanent cloud persistence.'
+              }
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-stone-800/90 hover:bg-stone-800 text-stone-300 border border-stone-700 transition-colors cursor-pointer"
             >
               <span
                 className={`w-2 h-2 rounded-full ${
-                  isSynced ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'
+                  isCloudDatabaseConnected
+                    ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]'
+                    : isSynced
+                    ? 'bg-emerald-400 animate-pulse'
+                    : 'bg-amber-400'
                 }`}
               />
-              <span className="hidden md:inline">{isSynced ? 'Multi-Device Synced' : 'Syncing...'}</span>
+              <span className="hidden md:inline">
+                {isCloudDatabaseConnected
+                  ? 'MongoDB Cloud Active'
+                  : isSynced
+                  ? 'Multi-Device Synced'
+                  : 'Syncing...'}
+              </span>
               <RefreshCw className="w-3 h-3 text-stone-400" />
             </button>
 
